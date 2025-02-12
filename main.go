@@ -1,6 +1,10 @@
 package main
 
+import (
+	"experiments/benchmarks"
+)
+
 func main() {
 	g := 1
-	concurrentBinaryTree(g, 10, 20)
+	benchmarks.RunParallelBinaryTree(g, 1000, 100)
 }

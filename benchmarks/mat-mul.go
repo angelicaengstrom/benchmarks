@@ -1,4 +1,4 @@
-package main
+package benchmarks
 
 import (
 	"math/rand/v2"
@@ -11,7 +11,7 @@ type Numeric interface {
 		~float32 | ~float64
 }
 
-func generateMatrix[T Numeric](rows int, cols int) [][]T {
+func GenerateMatrix[T Numeric](rows int, cols int) [][]T {
 	matrix := make([][]T, rows)
 	for i := range matrix {
 		matrix[i] = make([]T, cols)
@@ -22,7 +22,7 @@ func generateMatrix[T Numeric](rows int, cols int) [][]T {
 	return matrix
 }
 
-func concurrentMatrixMultiplication[T Numeric](m1 [][]T, m2 [][]T, n int) ([][]T, time.Duration, float64, time.Duration) {
+func ConcurrentMatrixMultiplication[T Numeric](m1 [][]T, m2 [][]T, n int) ([][]T, time.Duration, float64, time.Duration) {
 	if len(m1[0]) != len(m2) {
 		return nil, 0, 0, 0
 	}

@@ -1,6 +1,7 @@
-package main
+package test
 
 import (
+	"experiments/benchmarks"
 	"runtime"
 	"runtime/debug"
 	"testing"
@@ -11,8 +12,8 @@ func BenchmarkConcurrentMatrixMultiplication2(b *testing.B) {
 	rows := 500
 	cols := 500
 	n := 2
-	A := generateMatrix[int](rows, cols)
-	B := generateMatrix[int](cols, rows)
+	A := benchmarks.GenerateMatrix[int](rows, cols)
+	B := benchmarks.GenerateMatrix[int](cols, rows)
 	var totalThroughput float64
 	var totalLatency time.Duration
 	var totalComputationTime time.Duration
@@ -20,7 +21,7 @@ func BenchmarkConcurrentMatrixMultiplication2(b *testing.B) {
 	b.ResetTimer()
 	for j := 0; j < 10; j++ {
 		debug.SetGCPercent(-1)
-		_, latency, throughput, computationTime := concurrentMatrixMultiplication[int](A, B, n)
+		_, latency, throughput, computationTime := benchmarks.ConcurrentMatrixMultiplication[int](A, B, n)
 		totalThroughput += throughput
 		totalLatency += latency
 		totalComputationTime += computationTime
@@ -40,8 +41,8 @@ func BenchmarkConcurrentMatrixMultiplication4(b *testing.B) {
 	rows := 500
 	cols := 500
 	n := 4
-	A := generateMatrix[int](rows, cols)
-	B := generateMatrix[int](cols, rows)
+	A := benchmarks.GenerateMatrix[int](rows, cols)
+	B := benchmarks.GenerateMatrix[int](cols, rows)
 	var avgThroughput float64
 	var avgLatency time.Duration
 	var avgComputationTime time.Duration
@@ -49,7 +50,7 @@ func BenchmarkConcurrentMatrixMultiplication4(b *testing.B) {
 	b.ResetTimer()
 	for j := 0; j < 10; j++ {
 		debug.SetGCPercent(-1)
-		_, latency, throughput, computationTime := concurrentMatrixMultiplication[int](A, B, n)
+		_, latency, throughput, computationTime := benchmarks.ConcurrentMatrixMultiplication[int](A, B, n)
 		avgThroughput += throughput
 		avgLatency += latency
 		avgComputationTime += computationTime
