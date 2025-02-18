@@ -1,10 +1,7 @@
 package main
 
-import (
-	"experiments/benchmarks"
-)
+import "experiments/benchmarks"
 
 func main() {
-	g := 1
-	benchmarks.RunParallelBinaryTree(g, 1000, 100)
+	benchmarks.RunMatrixMultiplication(5, 10, 2, 2)
 }
