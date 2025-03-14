@@ -6,7 +6,7 @@ import (
 	. "experiments/benchmarks/metrics"
 	"math/rand/v2"
 	"region"
-	"runtime"
+	"runtime/debug"
 	"time"
 )
 
@@ -16,8 +16,9 @@ type product struct {
 }
 
 type position struct {
-	x int
-	y int
+	x            int
+	y            int
+	latencyStart time.Time
 }
 
 func generateMatrix(valueRange int, r *region.Region) [Rows][Cols]int {
@@ -53,7 +54,7 @@ func matrixMultiplication(m1 [Rows][Cols]int, m2 [Rows][Cols]int, r1 *region.Reg
 
 	for i := region.AllocFromRegion[int](r1); *i < Rows; *i++ {
 		for j := region.AllocFromRegion[int](r1); *j < Cols; *j++ {
-			positions <- position{*i, *j}
+			positions <- position{*i, *j, time.Now()}
 		}
 	}
 
@@ -97,86 +98,53 @@ func calculateProducts(
 	positions chan position,
 	r1 *region.Region) {
 
-	//allocationStart := time.Now()
-	r := region.AllocFromRegion[region.Region](r1)
-	//AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
-
 	allocationStart := time.Now()
-	cols := region.AllocFromRegion[[Cols][Rows]int](r)
-	pos := region.AllocFromRegion[position](r)
+	cols := region.AllocFromRegion[[Cols][Rows]int](r1)
+	pos := region.AllocFromRegion[position](r1)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
-	var memStats runtime.MemStats
-	latencyStart := time.Now()
-
 	for *pos = range positions {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
 
 		if cols[pos.y] == [Rows]int{} {
-			cols[pos.y] = fetchColumn(m2, pos.y, r)
+			cols[pos.y] = fetchColumn(m2, pos.y, r1)
 		}
 
 		products <- product{
-			res: *calculateProduct(m1[pos.x], cols[pos.y], r),
+			res: *calculateProduct(m1[pos.x], cols[pos.y], r1),
 			pos: *pos,
 		}
-
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.RegionIntFrag) / float64(memStats.RegionInUse)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
-		latencyStart = time.Now()
 	}
 
-	// Should inner region removal increment DeallocationTime?
-	r.RemoveRegion()
 	r1.DecRefCounter()
 }
 
 func RunMatrixMultiplication(valueRange int) Metrics {
+	debug.SetGCPercent(-1)
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
-
-	//Should creation of regions increment AllocationTime?
-	r1 := region.CreateRegion()
 
 	start := time.Now()
+	r1 := region.CreateRegion()
 
 	m1 := generateMatrix(valueRange, r1)
 	m2 := generateMatrix(valueRange, r1)
 
 	matrixMultiplication(m1, m2, r1)
 
-	computationTime := float64(time.Since(start).Nanoseconds()) / float64(1_000_000_000)
+	computationTime := float64(time.Since(start).Nanoseconds())
 
 	deallocationStart := time.Now()
 	r1.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	throughput := float64(Rows*Cols) / float64(computationTime)
+	throughput := float64(Rows*Cols*1_000_000) / float64(computationTime)
 
 	return Metrics{
-		float64(computationTime) / time.Second.Seconds(),
+		float64(computationTime) / 1_000,
 		throughput,
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }

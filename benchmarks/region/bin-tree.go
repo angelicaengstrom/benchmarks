@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"region"
-	"runtime"
 	"runtime/debug"
 	"time"
 )
@@ -21,9 +20,10 @@ const (
 )
 
 type request struct {
-	value  int
-	op     opType
-	result chan bool
+	value        int
+	op           opType
+	result       chan bool
+	latencyStart time.Time
 }
 
 type Node struct {
@@ -43,11 +43,8 @@ func (n *Node) run(r *region.Region) {
 	req := region.AllocFromRegion[request](r)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
-	var memStats runtime.MemStats
-
-	latencyStart := time.Now()
 	for *req = range n.reqs {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 
 		switch req.op {
 		case OpInsert:
@@ -67,6 +64,7 @@ func (n *Node) run(r *region.Region) {
 
 					req.result <- true
 				} else {
+					req.latencyStart = time.Now()
 					n.left.reqs <- *req
 				}
 			} else if req.value > n.value {
@@ -85,6 +83,7 @@ func (n *Node) run(r *region.Region) {
 
 					req.result <- true
 				} else {
+					req.latencyStart = time.Now()
 					n.right.reqs <- *req
 				}
 			} else {
@@ -94,31 +93,15 @@ func (n *Node) run(r *region.Region) {
 			if req.value == n.value {
 				req.result <- true
 			} else if req.value < n.value && n.left != nil {
+				req.latencyStart = time.Now()
 				n.left.reqs <- *req
 			} else if req.value > n.value && n.right != nil {
+				req.latencyStart = time.Now()
 				n.right.reqs <- *req
 			} else {
 				req.result <- false
 			}
 		}
-
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.RegionIntFrag) / float64(memStats.RegionInUse)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
-
-		latencyStart = time.Now()
 	}
 	r.DecRefCounter()
 }
@@ -141,9 +124,8 @@ func (t *FineGrainBinaryTree) run(r *region.Region) {
 	req := region.AllocFromRegion[request](r)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
-	latencyStart := time.Now()
 	for *req = range t.reqs {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 		switch req.op {
 		case OpInsert:
 			if t.root == nil {
@@ -160,16 +142,17 @@ func (t *FineGrainBinaryTree) run(r *region.Region) {
 
 				req.result <- true
 			} else {
+				req.latencyStart = time.Now()
 				t.root.reqs <- *req
 			}
 		case OpSearch:
 			if t.root == nil {
 				req.result <- false
 			} else {
+				req.latencyStart = time.Now()
 				t.root.reqs <- *req
 			}
 		}
-		latencyStart = time.Now()
 	}
 	r.DecRefCounter()
 }
@@ -182,6 +165,7 @@ func (tree *FineGrainBinaryTree) Insert(value int, r *region.Region) bool {
 
 	req.value = value
 	req.op = OpInsert
+	req.latencyStart = time.Now()
 
 	tree.reqs <- *req
 	return <-req.result
@@ -195,6 +179,7 @@ func (tree *FineGrainBinaryTree) Search(value int, r *region.Region) bool {
 
 	req.value = value
 	req.op = OpSearch
+	req.latencyStart = time.Now()
 
 	tree.reqs <- *req
 	return <-req.result
@@ -233,14 +218,10 @@ func RunBinaryTree(valueRange int, op int) Metrics {
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
-
-	done := make(chan bool)
-	r1 := region.CreateRegion()
 
 	computationTimeStart := time.Now()
+	r1 := region.CreateRegion()
+	done := region.AllocChannel[bool](0, r1)
 
 	fgbt := NewFineGrainBinaryTree(r1)
 
@@ -261,12 +242,9 @@ func RunBinaryTree(valueRange int, op int) Metrics {
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
 	return Metrics{
-		float64(ComputationTime.Load()) / 1_000_000_000,
-		float64(BinOp*Goroutines*1_000_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(ComputationTime.Load()) / 1_000,
+		float64(BinOp*Goroutines*1_000_000) / float64(ComputationTime.Load()),
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }

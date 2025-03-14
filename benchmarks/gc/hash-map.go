@@ -106,10 +106,8 @@ func (b bucket) run() {
 	req := new(request)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	var memStats runtime.MemStats
-	latencyStart := time.Now()
 	for *req = range b.requests {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 		switch req.op {
 		case OpInsert:
 			req.result <- b.add(req.value)
@@ -119,23 +117,6 @@ func (b bucket) run() {
 			req.result <- b.remove(req.value)
 		}
 
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.HeapIntFrag) / float64(memStats.HeapAlloc)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
-
-		latencyStart = time.Now()
 	}
 }
 
@@ -151,7 +132,7 @@ func (m *FineGrainedMap) Insert(value int) bool {
 
 	*idx = m.hashKey(value)
 
-	m.buckets[*idx].requests <- request{value: value, op: OpInsert, result: res}
+	m.buckets[*idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
 	return <-res
 }
 
@@ -163,7 +144,7 @@ func (m *FineGrainedMap) Search(value int) bool {
 
 	*idx = m.hashKey(value)
 
-	m.buckets[*idx].requests <- request{value: value, op: OpSearch, result: res}
+	m.buckets[*idx].requests <- request{value: value, op: OpSearch, result: res, latencyStart: time.Now()}
 	return <-res
 }
 
@@ -174,7 +155,7 @@ func (m *FineGrainedMap) Delete(value int) bool {
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	*idx = m.hashKey(value)
-	m.buckets[*idx].requests <- request{value: value, op: OpRemove, result: res}
+	m.buckets[*idx].requests <- request{value: value, op: OpRemove, result: res, latencyStart: time.Now()}
 	return <-res
 }
 
@@ -200,9 +181,6 @@ func RunHashMap(valueRange int) Metrics {
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
 
 	allocationTimeStart := time.Now()
 	done := make(chan bool)
@@ -225,12 +203,9 @@ func RunHashMap(valueRange int) Metrics {
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
 	return Metrics{
-		float64(ComputationTime.Load()) / 1_000_000_000,
-		float64(HashOp*1_000_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(ComputationTime.Load()) / 1_000,
+		float64(HashOp*1_000_000) / float64(ComputationTime.Load()),
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }

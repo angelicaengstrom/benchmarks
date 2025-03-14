@@ -9,8 +9,13 @@ import (
 	"time"
 )
 
+type Conn struct {
+	c            net.Conn
+	latencyStart time.Time
+}
+
 type server struct {
-	connection chan net.Conn
+	connection chan Conn
 	listener   net.Listener
 }
 
@@ -18,7 +23,7 @@ func newServer(address string) (*server, error) {
 	allocationTimeStart := time.Now()
 	listener := new(net.Listener)
 	s := new(server)
-	s.connection = make(chan net.Conn)
+	s.connection = make(chan Conn)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	*listener, _ = net.Listen("tcp", address)
@@ -39,7 +44,7 @@ func (s *server) acceptConnections() {
 			continue
 		}
 		select {
-		case s.connection <- *conn:
+		case s.connection <- Conn{*conn, time.Now()}:
 		default:
 			(*conn).Close()
 			return
@@ -49,31 +54,12 @@ func (s *server) acceptConnections() {
 
 func (s *server) handleConnections() {
 	allocationTimeStart := time.Now()
-	conn := new(net.Conn)
+	conn := new(Conn)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	var memStats runtime.MemStats
-	latencyStart := time.Now()
 	for *conn = range s.connection {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
-		s.handleConnection(*conn)
-		latencyStart = time.Now()
-
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.HeapIntFrag) / float64(memStats.HeapAlloc)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
+		Latency.Add(time.Since(conn.latencyStart).Nanoseconds())
+		s.handleConnection(conn.c)
 	}
 }
 
@@ -106,9 +92,6 @@ func RunServerHandler() Metrics {
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
 
 	computationTimeStart := time.Now()
 
@@ -149,12 +132,9 @@ func RunServerHandler() Metrics {
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
 	return Metrics{
-		float64(ComputationTime.Load()) / 1_000_000_000,
-		float64(ServHandOp*1_000_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(ComputationTime.Load()) / 1_000,
+		float64(ServHandOp*1_000_000) / float64(ComputationTime.Load()),
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }

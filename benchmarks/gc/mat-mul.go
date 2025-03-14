@@ -14,8 +14,9 @@ type product struct {
 }
 
 type position struct {
-	x int
-	y int
+	x            int
+	y            int
+	latencyStart time.Time
 }
 
 func generateMatrix(valueRange int) [][]int {
@@ -66,7 +67,7 @@ func matrixMultiplication(m1 [][]int, m2 [][]int) [][]int {
 		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 		for j := new(int); *j < *c2; *j++ {
-			positions <- position{*i, *j}
+			positions <- position{*i, *j, time.Now()}
 		}
 	}
 
@@ -103,50 +104,28 @@ func fetchColumn(m2 [][]int, j int) []int {
 }
 
 func calculateProducts(m1 [][]int, m2 [][]int, products chan product, positions chan position) {
-	var memStats runtime.MemStats
-	latencyStart := time.Now()
-
 	allocationStart := time.Now()
 	var col = make([]int, len(m2))
 	var pos = new(position)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for *pos = range positions {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
 		col = fetchColumn(m2, pos.y)
 		products <- product{
 			res: *calculateProduct(m1[pos.x], col),
 			pos: *pos,
 		}
 
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.HeapIntFrag) / float64(memStats.HeapAlloc)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
-		latencyStart = time.Now()
 	}
 }
 
 func RunMatrixMultiplication(valueRange int) Metrics {
+	debug.SetGCPercent(-1)
+
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
-
-	debug.SetGCPercent(-1)
 
 	start := time.Now()
 
@@ -155,22 +134,19 @@ func RunMatrixMultiplication(valueRange int) Metrics {
 
 	matrixMultiplication(m1, m2)
 
-	computationTime := float64(time.Since(start).Nanoseconds()) / float64(1_000_000_000)
+	computationTime := float64(time.Since(start).Nanoseconds())
 
 	// end timers here
 	deallocationStart := time.Now()
 	runtime.GC()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	throughput := float64(Rows*Cols) / float64(computationTime)
+	throughput := float64(Rows*Cols*1_000_000) / float64(computationTime)
 
 	// TODO: HeapIntfrag Doesn't work, check compiler
-	return Metrics{float64(computationTime),
+	return Metrics{float64(computationTime) / 1_000,
 		throughput,
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }

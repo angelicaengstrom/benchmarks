@@ -7,7 +7,6 @@ import (
 	"experiments/benchmarks/gc"
 	. "experiments/benchmarks/metrics"
 	"experiments/benchmarks/region"
-	"fmt"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,25 +24,28 @@ const (
 	WarmUp  = 5
 	Rounds  = 10
 	Range   = 100
-	Program = "hash-map"
+	Program = "bin-tree"
 )
 
 func main() {
-	mm := MemoryManager(GC)
+	mm := MemoryManager(RBMM)
 	var avgMetrics Metrics
+	done := make(chan bool)
+
 	for i := 0; i < WarmUp; i++ {
 		runTests(mm)
 	}
+	// Measure memory
 	stop.Store(false)
-	go measureMemStats(mm)
+	go measureMemStats(mm, done)
 	for i := 0; i < Rounds; i++ {
 		m := runTests(mm)
 		avgMetrics = average(avgMetrics, m, float64(Rounds))
 	}
 	stop.Store(true)
 
-	writeResults(avgMetrics, mm)
-	fmt.Print(avgMetrics)
+	measureSysStats(avgMetrics, mm)
+	<-done
 }
 
 func runTests(mm MemoryManager) Metrics {
@@ -87,49 +89,45 @@ func average(avg Metrics, m Metrics, n float64) Metrics {
 	avg.ComputationTime += m.ComputationTime / n
 	avg.AllocationTime += m.AllocationTime / n
 	avg.DeallocationTime += m.DeallocationTime / n
-	avg.ExternalFrag += m.ExternalFrag / n
-	avg.InternalFrag += m.InternalFrag / n
-	avg.MemoryConsumption += m.MemoryConsumption / n
 	avg.Latency += m.Latency / n
 	avg.Throughput += m.Throughput / n
 	return avg
 }
 
-func measureMemStats(mm MemoryManager) {
+func measureMemStats(mm MemoryManager, done chan bool) {
 	var memStats runtime.MemStats
-	var memCons, extFrag, intFrag float64
+	var memCons, extFrag, intFrag, memReg int64
 	var stamp int64
 	start := time.Now()
 
 	var data [][]string
-	header := []string{"Time", "M_C", "ExtFrag", "IntFrag"}
+	header := []string{"Time", "M_C", "ExtFrag", "IntFrag", "M_R"}
 	data = append(data, header)
 
 	for !stop.Load() {
 		runtime.ReadMemStats(&memStats)
-		stamp = time.Since(start).Nanoseconds()
-		memCons = float64(memStats.HeapAlloc)
-		extFrag = float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if mm == GC {
-			intFrag = float64(memStats.HeapIntFrag) / float64(memStats.HeapAlloc)
-		} else {
-			intFrag = float64(memStats.RegionIntFrag) / float64(memStats.RegionInUse)
+		stamp = time.Since(start).Nanoseconds() / 1_000_000    // ms
+		memCons = int64(memStats.HeapAlloc) / int64(1024*1024) // MB
+		extFrag = int64(memStats.HeapIdle) / int64(1024*1024)  // MB
+		switch mm {
+		case GC:
+			intFrag = int64(memStats.HeapIntFrag) / int64(1024*1024)
+		case RBMM:
+			if memStats.RegionIntFrag < uint64(^uint32(0)) {
+				intFrag = int64(memStats.RegionIntFrag) / int64(1024*1024)
+			}
 		}
+		memReg = int64(memStats.RegionInUse) / int64(1024*1024)
 
 		data = append(data, []string{
 			strconv.Itoa(int(stamp)),
-			strconv.FormatFloat(memCons, 'f', -1, 64),
-			strconv.FormatFloat(extFrag, 'f', -1, 64),
-			strconv.FormatFloat(intFrag, 'f', -1, 64)})
+			strconv.Itoa(int(memCons)),
+			strconv.Itoa(int(extFrag)),
+			strconv.Itoa(int(intFrag)),
+			strconv.Itoa(int(memReg))})
+
+		time.Sleep(time.Nanosecond * 1_000)
 	}
-
-	file, _ := os.OpenFile("results/"+Program+"-mem.csv", os.O_WRONLY|os.O_CREATE, 0600)
-	csvWriter := csv.NewWriter(file)
-	csvWriter.WriteAll(data)
-	file.Close()
-}
-
-func writeResults(metrics Metrics, mm MemoryManager) {
 	var mmStr string
 	switch mm {
 	case GC:
@@ -137,48 +135,90 @@ func writeResults(metrics Metrics, mm MemoryManager) {
 	case RBMM:
 		mmStr = "RBMM"
 	}
-	file, _ := os.OpenFile("results/"+Program+".csv", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-
+	file, _ := os.OpenFile("results/"+Program+"-"+mmStr+"-mem.csv", os.O_WRONLY|os.O_CREATE, 0600)
 	csvWriter := csv.NewWriter(file)
+	csvWriter.WriteAll(data)
+	file.Close()
+	done <- true
+}
+
+func measureSysStats(metrics Metrics, mm MemoryManager) {
+	var mmStr string
+	switch mm {
+	case GC:
+		mmStr = "GC"
+	case RBMM:
+		mmStr = "RBMM"
+	}
 
 	var output [][]string
-	var header []string
-	var headerData []string
+	if _, err := os.Stat("results/" + Program + "-" + mmStr + "-sys.csv"); os.IsNotExist(err) {
+		metricsHeader := []string{"G", "WarmUps", "Rounds", "Operations", "T_C", "T_L", "Theta", "T_A", "T_D"}
+		output = append(output, metricsHeader)
+	}
+
+	file, _ := os.OpenFile("results/"+Program+"-"+mmStr+"-sys.csv", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	csvWriter := csv.NewWriter(file)
+
+	var metricsData []string
 	switch Program {
 	case "mat-mul":
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds", "ValRange", "Operations"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines), strconv.Itoa(WarmUp), strconv.Itoa(Rounds), strconv.Itoa(Range), strconv.Itoa(Rows * Cols)}
+		metricsData = []string{
+			strconv.Itoa(Goroutines),
+			strconv.Itoa(WarmUp),
+			strconv.Itoa(Rounds),
+			strconv.Itoa(Rows * Cols),
+			strconv.Itoa(int(metrics.ComputationTime)),
+			strconv.Itoa(int(metrics.Latency)),
+			strconv.Itoa(int(metrics.Throughput)),
+			strconv.Itoa(int(metrics.AllocationTime)),
+			strconv.Itoa(int(metrics.DeallocationTime))}
 	case "bin-tree":
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds", "ValRange", "Operations"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines), strconv.Itoa(WarmUp), strconv.Itoa(Rounds), strconv.Itoa(Range), strconv.Itoa(BinOp * Goroutines)}
+		metricsData = []string{
+			strconv.Itoa(Goroutines),
+			strconv.Itoa(WarmUp),
+			strconv.Itoa(Rounds),
+			strconv.Itoa(BinOp * Goroutines),
+			strconv.Itoa(int(metrics.ComputationTime)),
+			strconv.Itoa(int(metrics.Latency)),
+			strconv.Itoa(int(metrics.Throughput)),
+			strconv.Itoa(int(metrics.AllocationTime)),
+			strconv.Itoa(int(metrics.DeallocationTime))}
 	case "pro-con":
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds", "ValRange", "Operations"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines * 2), strconv.Itoa(WarmUp), strconv.Itoa(Rounds), strconv.Itoa(Range), strconv.Itoa(ProConOp)}
+		metricsData = []string{
+			strconv.Itoa(Goroutines),
+			strconv.Itoa(WarmUp),
+			strconv.Itoa(Rounds),
+			strconv.Itoa(ProConOp),
+			strconv.Itoa(int(metrics.ComputationTime)),
+			strconv.Itoa(int(metrics.Latency)),
+			strconv.Itoa(int(metrics.Throughput)),
+			strconv.Itoa(int(metrics.AllocationTime)),
+			strconv.Itoa(int(metrics.DeallocationTime))}
 	case "serv-hand":
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds", "Operations"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines), strconv.Itoa(WarmUp), strconv.Itoa(Rounds), strconv.Itoa(ServHandOp)}
+		metricsData = []string{
+			strconv.Itoa(Goroutines),
+			strconv.Itoa(WarmUp),
+			strconv.Itoa(Rounds),
+			strconv.Itoa(ServHandOp),
+			strconv.Itoa(int(metrics.ComputationTime)),
+			strconv.Itoa(int(metrics.Latency)),
+			strconv.Itoa(int(metrics.Throughput)),
+			strconv.Itoa(int(metrics.AllocationTime)),
+			strconv.Itoa(int(metrics.DeallocationTime))}
 	case "hash-map":
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds", "ValRange", "Operations"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines), strconv.Itoa(WarmUp), strconv.Itoa(Rounds), strconv.Itoa(HashRange), strconv.Itoa(HashOp * Goroutines)}
-	default:
-		header = []string{"Program", "MemMan", "Goroutines", "WarmUps", "Rounds"}
-		headerData = []string{Program, mmStr, strconv.Itoa(Goroutines), strconv.Itoa(WarmUp), strconv.Itoa(Rounds)}
+		metricsData = []string{
+			strconv.Itoa(Goroutines),
+			strconv.Itoa(WarmUp),
+			strconv.Itoa(Rounds),
+			strconv.Itoa(HashOp * Goroutines),
+			strconv.Itoa(int(metrics.ComputationTime)),
+			strconv.Itoa(int(metrics.Latency)),
+			strconv.Itoa(int(metrics.Throughput)),
+			strconv.Itoa(int(metrics.AllocationTime)),
+			strconv.Itoa(int(metrics.DeallocationTime))}
 	}
-	output = append(output, header)
-	output = append(output, headerData)
 
-	metricsHeader := []string{"T_C", "T_L", "Theta", "M_C", "M_E", "M_F", "T_A", "T_D"}
-	metricsData := []string{
-		strconv.FormatFloat(metrics.ComputationTime, 'f', -1, 64),
-		strconv.FormatFloat(metrics.Latency, 'f', -1, 64),
-		strconv.FormatFloat(metrics.Throughput, 'f', -1, 64),
-		strconv.FormatFloat(metrics.MemoryConsumption, 'f', -1, 64),
-		strconv.FormatFloat(metrics.ExternalFrag, 'f', -1, 64),
-		strconv.FormatFloat(metrics.InternalFrag, 'f', -1, 64),
-		strconv.FormatFloat(metrics.AllocationTime, 'f', -1, 64),
-		strconv.FormatFloat(metrics.DeallocationTime, 'f', -1, 64)}
-
-	output = append(output, metricsHeader)
 	output = append(output, metricsData)
 
 	csvWriter.WriteAll(output)

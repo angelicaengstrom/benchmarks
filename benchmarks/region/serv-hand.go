@@ -12,8 +12,13 @@ import (
 	"time"
 )
 
+type Conn struct {
+	c            net.Conn
+	latencyStart time.Time
+}
+
 type server struct {
-	connection chan net.Conn
+	connection chan Conn
 	listener   net.Listener
 }
 
@@ -21,7 +26,7 @@ func newServer(address string, r *region.Region) (*server, error) {
 	allocationTimeStart := time.Now()
 	listener := region.AllocFromRegion[net.Listener](r)
 	s := region.AllocFromRegion[server](r)
-	s.connection = region.AllocChannel[net.Conn](0, r)
+	s.connection = region.AllocChannel[Conn](0, r)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	*listener, _ = net.Listen("tcp", address)
@@ -42,7 +47,7 @@ func (s *server) acceptConnections(r *region.Region) {
 			continue
 		}
 		select {
-		case s.connection <- *conn:
+		case s.connection <- Conn{*conn, time.Now()}:
 		default:
 			(*conn).Close()
 			r.DecRefCounter()
@@ -53,32 +58,13 @@ func (s *server) acceptConnections(r *region.Region) {
 
 func (s *server) handleConnections(r *region.Region) {
 	allocationTimeStart := time.Now()
-	conn := region.AllocFromRegion[net.Conn](r)
+	conn := region.AllocFromRegion[Conn](r)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	var memStats runtime.MemStats
-	latencyStart := time.Now()
 	for *conn = range s.connection {
-		Latency.Add(time.Since(latencyStart).Nanoseconds())
+		Latency.Add(time.Since(conn.latencyStart).Nanoseconds())
 		r.IncRefCounter()
-		s.handleConnection(*conn, r)
-		latencyStart = time.Now()
-
-		runtime.ReadMemStats(&memStats)
-
-		if memStats.HeapAlloc > P_memoryConsuption.Load() {
-			P_memoryConsuption.Store(memStats.HeapAlloc)
-		}
-
-		externalFrag := float64(memStats.HeapIdle) / float64(memStats.HeapSys)
-		if externalFrag > P_externalFrag.Load().(float64) {
-			P_externalFrag.Store(externalFrag)
-		}
-
-		internalFrag := float64(memStats.HeapIntFrag) / float64(memStats.HeapAlloc)
-		if internalFrag > P_internalFrag.Load().(float64) {
-			P_internalFrag.Store(internalFrag)
-		}
+		s.handleConnection(conn.c, r)
 	}
 	r.DecRefCounter()
 }
@@ -116,13 +102,9 @@ func RunServerHandler() Metrics {
 	AllocationTime.Store(0)
 	DeallocationTime.Store(0)
 	Latency.Store(0)
-	P_memoryConsuption.Store(0)
-	P_internalFrag.Store(0.0)
-	P_externalFrag.Store(0.0)
-
-	r1 := region.CreateRegion()
 
 	computationTimeStart := time.Now()
+	r1 := region.CreateRegion()
 
 	allocationTimeStart := time.Now()
 	address := region.AllocFromRegion[string](r1)
@@ -161,13 +143,12 @@ func RunServerHandler() Metrics {
 	r1.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
+	runtime.GC()
+
 	return Metrics{
-		float64(ComputationTime.Load()) / 1_000_000_000,
-		float64(ServHandOp*1_000_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000_000_000,
-		float64(P_memoryConsuption.Load()),
-		P_externalFrag.Load().(float64),
-		P_internalFrag.Load().(float64),
-		float64(AllocationTime.Load()) / 1_000_000_000,
-		float64(DeallocationTime.Load()) / 1_000_000_000}
+		float64(ComputationTime.Load()) / 1_000,
+		float64(ServHandOp*1_000_000) / float64(ComputationTime.Load()),
+		float64(Latency.Load()) / 1_000,
+		float64(AllocationTime.Load()) / 1_000,
+		float64(DeallocationTime.Load()) / 1_000}
 }
