@@ -29,11 +29,9 @@ func consuming(buffer chan value, done chan bool, r *region.Region) {
 	x := region.AllocFromRegion[value](r)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
-	latencyStart := time.Now()
 	for *x = range buffer {
 		Latency.Add(time.Since(x.latencyStart).Nanoseconds())
 		_ = x
-		latencyStart = time.Now()
 	}
 	done <- true
 	r.DecRefCounter()

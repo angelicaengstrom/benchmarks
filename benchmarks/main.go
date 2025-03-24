@@ -24,11 +24,11 @@ const (
 	WarmUp  = 5
 	Rounds  = 10
 	Range   = 100
-	Program = "bin-tree"
+	Program = "mat-mul"
 )
 
 func main() {
-	mm := MemoryManager(RBMM)
+	mm := MemoryManager(GC)
 	var avgMetrics Metrics
 	done := make(chan bool)
 

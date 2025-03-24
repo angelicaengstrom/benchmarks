@@ -80,15 +80,11 @@ func calculateProduct(row [Cols]int, col [Rows]int, r *region.Region) *int {
 	return p
 }
 
-func fetchColumn(m2 [Rows][Cols]int, j int, r *region.Region) [Rows]int {
-	allocationStart := time.Now()
-	col := region.AllocFromRegion[[Rows]int](r)
-	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
-
+func fetchColumn(m2 [Rows][Cols]int, j int, col [Rows]int, r *region.Region) [Rows]int {
 	for i := region.AllocFromRegion[int](r); *i < len(m2); *i++ {
-		(*col)[*i] = m2[*i][j]
+		col[*i] = m2[*i][j]
 	}
-	return *col
+	return col
 }
 
 func calculateProducts(
@@ -99,19 +95,17 @@ func calculateProducts(
 	r1 *region.Region) {
 
 	allocationStart := time.Now()
-	cols := region.AllocFromRegion[[Cols][Rows]int](r1)
+	col := region.AllocFromRegion[[Rows]int](r1)
 	pos := region.AllocFromRegion[position](r1)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for *pos = range positions {
 		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
 
-		if cols[pos.y] == [Rows]int{} {
-			cols[pos.y] = fetchColumn(m2, pos.y, r1)
-		}
+		fetchColumn(m2, pos.y, *col, r1)
 
 		products <- product{
-			res: *calculateProduct(m1[pos.x], cols[pos.y], r1),
+			res: *calculateProduct(m1[pos.x], *col, r1),
 			pos: *pos,
 		}
 	}

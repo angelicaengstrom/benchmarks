@@ -5,11 +5,11 @@ import "sync/atomic"
 // Configurations
 const (
 	// Amount of goroutines
-	Goroutines = 15
+	Goroutines = 5
 
 	// mat-mul
-	Rows = 100
-	Cols = 100
+	Rows = 100 * (1 + (Goroutines >> 2))
+	Cols = Rows
 
 	//bin-tree
 	BinOp = 1000

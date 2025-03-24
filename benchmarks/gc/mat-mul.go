@@ -92,11 +92,7 @@ func calculateProduct(row []int, col []int) *int {
 	return p
 }
 
-func fetchColumn(m2 [][]int, j int) []int {
-	allocationStart := time.Now()
-	var col = make([]int, len(m2))
-	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
-
+func fetchColumn(m2 [][]int, col []int, j int) []int {
 	for i := new(int); *i < len(m2); *i++ {
 		col[*i] = m2[*i][j]
 	}
@@ -111,7 +107,7 @@ func calculateProducts(m1 [][]int, m2 [][]int, products chan product, positions 
 
 	for *pos = range positions {
 		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
-		col = fetchColumn(m2, pos.y)
+		col = fetchColumn(m2, col, pos.y)
 		products <- product{
 			res: *calculateProduct(m1[pos.x], col),
 			pos: *pos,
