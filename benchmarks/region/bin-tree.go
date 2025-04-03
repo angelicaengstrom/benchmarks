@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"region"
+	"runtime"
 	"runtime/debug"
 	"time"
 )
@@ -31,85 +32,89 @@ type Node struct {
 	left  *Node
 	right *Node
 	reqs  chan request
+	done  chan bool
 }
 
 type FineGrainBinaryTree struct {
 	root *Node
 	reqs chan request
+	done chan bool
 }
 
-func (n *Node) run(r *region.Region) {
+func (n *Node) run(r1 *region.Region) {
 	allocationStart := time.Now()
-	req := region.AllocFromRegion[request](r)
+	req := region.AllocFromRegion[request](r1)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for *req = range n.reqs {
-		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
-
 		switch req.op {
 		case OpInsert:
 			if req.value < n.value {
 				if n.left == nil {
+					Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 
 					allocationStart = time.Now()
-					n.left = region.AllocFromRegion[Node](r)
-					n.left.reqs = region.AllocChannel[request](0, r)
+					n.left = region.AllocFromRegion[Node](r1)
+					n.left.reqs = region.AllocChannel[request](0, r1)
+					n.left.done = region.AllocChannel[bool](0, r1)
 					AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 					n.left.value = req.value
 
-					if r.IncRefCounter() {
-						go n.left.run(r)
+					if r1.IncRefCounter() {
+						go n.left.run(r1)
 					}
 
 					req.result <- true
 				} else {
-					req.latencyStart = time.Now()
 					n.left.reqs <- *req
 				}
 			} else if req.value > n.value {
 				if n.right == nil {
+					Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 
 					allocationStart = time.Now()
-					n.right = region.AllocFromRegion[Node](r)
-					n.right.reqs = region.AllocChannel[request](0, r)
+					n.right = region.AllocFromRegion[Node](r1)
+					n.right.reqs = region.AllocChannel[request](0, r1)
+					n.right.done = region.AllocChannel[bool](0, r1)
 					AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 					n.right.value = req.value
 
-					if r.IncRefCounter() {
-						go n.right.run(r)
+					if r1.IncRefCounter() {
+						go n.right.run(r1)
 					}
 
 					req.result <- true
 				} else {
-					req.latencyStart = time.Now()
 					n.right.reqs <- *req
 				}
 			} else {
+				Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 				req.result <- false
 			}
 		case OpSearch:
 			if req.value == n.value {
+				Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 				req.result <- true
 			} else if req.value < n.value && n.left != nil {
-				req.latencyStart = time.Now()
 				n.left.reqs <- *req
 			} else if req.value > n.value && n.right != nil {
-				req.latencyStart = time.Now()
 				n.right.reqs <- *req
 			} else {
+				Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 				req.result <- false
 			}
 		}
 	}
-	r.DecRefCounter()
+	n.done <- true
 }
 
 func NewFineGrainBinaryTree(r *region.Region) *FineGrainBinaryTree {
 	allocationStart := time.Now()
 	t := region.AllocFromRegion[FineGrainBinaryTree](r)
 	t.reqs = region.AllocChannel[request](0, r)
+	t.done = region.AllocChannel[bool](0, r)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	if r.IncRefCounter() {
@@ -119,82 +124,84 @@ func NewFineGrainBinaryTree(r *region.Region) *FineGrainBinaryTree {
 	return t
 }
 
-func (t *FineGrainBinaryTree) run(r *region.Region) {
+func (t *FineGrainBinaryTree) run(r1 *region.Region) {
 	allocationStart := time.Now()
-	req := region.AllocFromRegion[request](r)
+	req := region.AllocFromRegion[request](r1)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for *req = range t.reqs {
-		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 		switch req.op {
 		case OpInsert:
 			if t.root == nil {
+				Latency.Add(time.Since(req.latencyStart).Nanoseconds())
+
 				allocationStart = time.Now()
-				t.root = region.AllocFromRegion[Node](r)
-				t.root.reqs = region.AllocChannel[request](0, r)
+				t.root = region.AllocFromRegion[Node](r1)
+				t.root.reqs = region.AllocChannel[request](0, r1)
+				t.root.done = region.AllocChannel[bool](0, r1)
 				AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 				t.root.value = req.value
 
-				if r.IncRefCounter() {
-					go t.root.run(r)
+				if r1.IncRefCounter() {
+					go t.root.run(r1)
 				}
 
 				req.result <- true
 			} else {
-				req.latencyStart = time.Now()
 				t.root.reqs <- *req
 			}
 		case OpSearch:
 			if t.root == nil {
+				Latency.Add(time.Since(req.latencyStart).Nanoseconds())
 				req.result <- false
 			} else {
-				req.latencyStart = time.Now()
 				t.root.reqs <- *req
 			}
 		}
 	}
-	r.DecRefCounter()
+	t.done <- true
 }
 
-func (tree *FineGrainBinaryTree) Insert(value int, r *region.Region) bool {
-	allocationStart := time.Now()
-	req := region.AllocFromRegion[request](r)
-	req.result = region.AllocChannel[bool](0, r)
-	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
-
+func (tree *FineGrainBinaryTree) Insert(value int, req request) {
 	req.value = value
 	req.op = OpInsert
 	req.latencyStart = time.Now()
 
-	tree.reqs <- *req
-	return <-req.result
+	tree.reqs <- req
+	<-req.result
 }
 
-func (tree *FineGrainBinaryTree) Search(value int, r *region.Region) bool {
-	allocationStart := time.Now()
-	req := region.AllocFromRegion[request](r)
-	req.result = region.AllocChannel[bool](0, r)
-	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
-
+func (tree *FineGrainBinaryTree) Search(value int, req request) {
 	req.value = value
 	req.op = OpSearch
 	req.latencyStart = time.Now()
 
-	tree.reqs <- *req
-	return <-req.result
+	tree.reqs <- req
+	<-req.result
 }
 
 func generateBinaryTreeOperations(valueRange int, op int, tree *FineGrainBinaryTree, done chan bool, r1 *region.Region) {
-	for i := region.AllocFromRegion[int](r1); *i < op; *i++ {
+	r2 := region.CreateRegion(0)
+
+	allocationStart := time.Now()
+	req := region.AllocFromRegion[request](r2)
+	req.result = region.AllocChannel[bool](0, r2)
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+
+	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
 		val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(2)); method {
 		case OpInsert:
-			tree.Insert(val, r1)
+			tree.Insert(val, *req)
 		case OpSearch:
-			tree.Search(val, r1)
+			tree.Search(val, *req)
 		}
 	}
+	deallocationStart := time.Now()
+	r2.RemoveRegion()
+	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
+
 	r1.DecRefCounter()
 	done <- true
 }
@@ -211,7 +218,19 @@ func (n *Node) Print() {
 	}
 }
 
-func RunBinaryTree(valueRange int, op int) Metrics {
+func (n *Node) destroyTree(r *region.Region) {
+	close(n.reqs)
+	<-n.done
+	r.DecRefCounter()
+	if n.right != nil {
+		n.right.destroyTree(r)
+	}
+	if n.left != nil {
+		n.left.destroyTree(r)
+	}
+}
+
+func RunBinaryTree(op int) SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -220,14 +239,18 @@ func RunBinaryTree(valueRange int, op int) Metrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-	r1 := region.CreateRegion()
+
+	r1 := region.CreateRegion(BinRange * 200)
+
+	allocationTimeStart := time.Now()
 	done := region.AllocChannel[bool](0, r1)
+	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	fgbt := NewFineGrainBinaryTree(r1)
 
 	for i := 0; i < Goroutines; i++ {
 		if r1.IncRefCounter() {
-			go generateBinaryTreeOperations(valueRange, op, fgbt, done, r1)
+			go generateBinaryTreeOperations(BinRange, op, fgbt, done, r1)
 		}
 	}
 
@@ -235,16 +258,24 @@ func RunBinaryTree(valueRange int, op int) Metrics {
 		<-done
 	}
 
-	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+	// Decrement each reference counter
+	fgbt.root.destroyTree(r1)
+	close(fgbt.reqs)
+	<-fgbt.done
+	r1.DecRefCounter()
 
 	deallocationStart := time.Now()
 	r1.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	return Metrics{
-		float64(ComputationTime.Load()) / 1_000,
-		float64(BinOp*Goroutines*1_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000,
-		float64(AllocationTime.Load()) / 1_000,
-		float64(DeallocationTime.Load()) / 1_000}
+	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	runtime.GC()
+
+	return SystemMetrics{
+		float64(ComputationTime.Load()),
+		float64(BinOp*Goroutines) / float64(ComputationTime.Load()),
+		float64(Latency.Load()),
+		float64(AllocationTime.Load()),
+		float64(DeallocationTime.Load())}
 }

@@ -6,6 +6,7 @@ import (
 	. "experiments/benchmarks/metrics"
 	"math/rand/v2"
 	"region"
+	"runtime"
 	"runtime/debug"
 	"time"
 )
@@ -55,6 +56,7 @@ func (l *list) remove(v int) bool {
 type bucket struct {
 	store    *list
 	requests chan request
+	done     chan bool
 }
 
 type FineGrainedMap struct {
@@ -82,21 +84,21 @@ func (b bucket) remove(value int) bool {
 func NewFineGrainedMap(r *region.Region) *FineGrainedMap {
 	allocationTimeStart := time.Now()
 	buckets := region.AllocFromRegion[[HashCap]*bucket](r)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	for i := range buckets {
-		allocationTimeStart = time.Now()
-		(*buckets)[i] = region.AllocFromRegion[bucket](r)
-		(*buckets)[i].store = region.AllocFromRegion[list](r)
-		(*buckets)[i].requests = region.AllocChannel[request](0, r)
-		AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-		r.IncRefCounter()
-		go (*buckets)[i].run(r)
-	}
-	allocationTimeStart = time.Now()
 	fgm := region.AllocFromRegion[FineGrainedMap](r)
+	i := region.AllocFromRegion[int](r)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
+
+	for *i = 0; *i < HashCap; *i++ {
+		if r.IncRefCounter() {
+			allocationTimeStart = time.Now()
+			(*buckets)[*i] = region.AllocFromRegion[bucket](r)
+			(*buckets)[*i].store = region.AllocFromRegion[list](r)
+			(*buckets)[*i].requests = region.AllocChannel[request](0, r)
+			(*buckets)[*i].done = region.AllocChannel[bool](0, r)
+			AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
+			go (*buckets)[*i].run(r)
+		}
+	}
 
 	fgm.buckets = *buckets
 	fgm.size = HashCap
@@ -119,67 +121,69 @@ func (b bucket) run(r *region.Region) {
 		case OpRemove:
 			req.result <- b.remove(req.value)
 		}
-
 	}
 	r.DecRefCounter()
+	b.done <- true
 }
 
 func (m *FineGrainedMap) hashKey(key int) int {
 	return key % m.size
 }
 
-func (m *FineGrainedMap) Insert(value int, r *region.Region) bool {
-	allocationTimeStart := time.Now()
-	idx := region.AllocFromRegion[int](r)
-	res := region.AllocChannel[bool](0, r)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-
-	m.buckets[*idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
+func (m *FineGrainedMap) Insert(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
 	return <-res
 }
 
-func (m *FineGrainedMap) Search(value int, r *region.Region) bool {
-	allocationTimeStart := time.Now()
-	idx := region.AllocFromRegion[int](r)
-	res := region.AllocChannel[bool](0, r)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-
-	m.buckets[*idx].requests <- request{value: value, op: OpSearch, result: res, latencyStart: time.Now()}
+func (m *FineGrainedMap) Search(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpSearch, result: res, latencyStart: time.Now()}
 	return <-res
 }
 
-func (m *FineGrainedMap) Delete(value int, r *region.Region) bool {
-	allocationTimeStart := time.Now()
-	idx := region.AllocFromRegion[int](r)
-	res := region.AllocChannel[bool](0, r)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-	m.buckets[*idx].requests <- request{value: value, op: OpRemove, result: res, latencyStart: time.Now()}
+func (m *FineGrainedMap) Delete(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpRemove, result: res, latencyStart: time.Now()}
 	return <-res
+}
+
+func closeBuckets(m *FineGrainedMap) {
+	for i := range m.buckets {
+		close(m.buckets[i].requests)
+		<-m.buckets[i].done
+	}
 }
 
 func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done chan bool, r *region.Region) {
-	for i := region.AllocFromRegion[int](r); *i < op; *i++ {
+	r2 := region.CreateRegion(0)
+
+	allocationTimeStart := time.Now()
+	idx := region.AllocFromRegion[int](r2)
+	res := region.AllocChannel[bool](0, r2)
+	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
+
+	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
 		val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(3)); method {
 		case OpInsert:
-			m.Insert(val, r)
+			m.Insert(val, *idx, res)
 		case OpSearch:
-			m.Search(val, r)
+			m.Search(val, *idx, res)
 		case OpRemove:
-			m.Delete(val, r)
+			m.Delete(val, *idx, res)
 		}
 	}
-	done <- true
+
+	deallocationStart := time.Now()
+	r2.RemoveRegion()
+	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
+
 	r.DecRefCounter()
+	done <- true
 }
 
-func RunHashMap(valueRange int) Metrics {
+func RunHashMap(valueRange int) SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -188,7 +192,7 @@ func RunHashMap(valueRange int) Metrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-	r1 := region.CreateRegion()
+	r1 := region.CreateRegion(HashCap * 8)
 
 	allocationTimeStart := time.Now()
 	done := region.AllocChannel[bool](0, r1)
@@ -197,23 +201,29 @@ func RunHashMap(valueRange int) Metrics {
 	m := NewFineGrainedMap(r1)
 
 	for i := 0; i < Goroutines; i++ {
-		r1.IncRefCounter()
-		go generateHashMapOperations(m, valueRange, HashOp, done, r1)
+		if r1.IncRefCounter() {
+			go generateHashMapOperations(m, valueRange, HashOp, done, r1)
+		}
 	}
 
 	for i := 0; i < Goroutines; i++ {
 		<-done
 	}
-	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	closeBuckets(m)
 
 	deallocationStart := time.Now()
 	r1.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	return Metrics{
-		float64(ComputationTime.Load()) / 1_000,
-		float64(HashOp*1_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000,
-		float64(AllocationTime.Load()) / 1_000,
-		float64(DeallocationTime.Load()) / 1_000}
+	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	runtime.GC()
+
+	return SystemMetrics{
+		float64(ComputationTime.Load()),
+		float64(HashOp) / float64(ComputationTime.Load()),
+		float64(Latency.Load()),
+		float64(AllocationTime.Load()),
+		float64(DeallocationTime.Load())}
 }

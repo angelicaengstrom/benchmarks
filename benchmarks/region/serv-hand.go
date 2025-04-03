@@ -12,90 +12,108 @@ import (
 	"time"
 )
 
-type Conn struct {
-	c            net.Conn
+type Request struct {
+	conn         net.Conn
 	latencyStart time.Time
+	buf          [1024]byte
 }
 
 type server struct {
-	connection chan Conn
-	listener   net.Listener
+	requests chan Request
+	listener net.Listener
 }
 
 func newServer(address string, r *region.Region) (*server, error) {
 	allocationTimeStart := time.Now()
-	listener := region.AllocFromRegion[net.Listener](r)
 	s := region.AllocFromRegion[server](r)
-	s.connection = region.AllocChannel[Conn](0, r)
+	s.requests = region.AllocChannel[Request](0, r)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	*listener, _ = net.Listen("tcp", address)
-	s.listener = *listener
+	s.listener, _ = net.Listen("tcp", address)
 
 	return s, nil
 }
 
-func (s *server) acceptConnections(r *region.Region) {
-	for {
+func (s *server) acceptConnections(done chan bool, r1 *region.Region) {
+	r2 := region.CreateRegion(ServHandOp * 1064 * Goroutines)
+	for i := region.AllocFromRegion[int](r2); i < ServHandOp*Goroutines; i++ {
 		allocationTimeStart := time.Now()
-		conn := region.AllocFromRegion[net.Conn](r)
-		err := region.AllocFromRegion[error](r)
+		req := region.AllocFromRegion[Request](r2)
 		AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-		*conn, *err = s.listener.Accept()
-		if *err != nil {
+		conn, err := s.listener.Accept()
+
+		if err != nil {
 			continue
 		}
-		select {
-		case s.connection <- Conn{*conn, time.Now()}:
-		default:
-			(*conn).Close()
-			r.DecRefCounter()
-			return
-		}
+
+		req.conn = conn
+		req.latencyStart = time.Now()
+		s.requests <- *req
 	}
+
+	close(s.requests)
+
+	deallocationStart := time.Now()
+	r2.RemoveRegion()
+	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
+
+	r1.DecRefCounter()
+	done <- true
 }
 
-func (s *server) handleConnections(r *region.Region) {
+func (s *server) handleConnections(done chan bool, r1 *region.Region) {
 	allocationTimeStart := time.Now()
-	conn := region.AllocFromRegion[Conn](r)
+	req := region.AllocFromRegion[Request](r1)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	for *conn = range s.connection {
-		Latency.Add(time.Since(conn.latencyStart).Nanoseconds())
-		r.IncRefCounter()
-		s.handleConnection(conn.c, r)
+	for *req = range s.requests {
+		Latency.Add(time.Since(req.latencyStart).Nanoseconds())
+		s.handleConnection(*req)
 	}
-	r.DecRefCounter()
+	r1.DecRefCounter()
+	done <- true
 }
 
-func (s *server) handleConnection(conn net.Conn, r *region.Region) {
-	_ = conn
-	conn.Close()
-	r.DecRefCounter()
+func (s *server) handleConnection(req Request) {
+	req.conn.Close()
 }
 
-func (s *server) run(r *region.Region) {
-	r.IncRefCounter()
-	go s.acceptConnections(r)
-	r.IncRefCounter()
-	go s.handleConnections(r)
+func (s *server) run(done chan bool, r1 *region.Region) {
+	r1.IncRefCounter()
+	go s.acceptConnections(done, r1)
+
+	r1.IncRefCounter()
+	go s.handleConnections(done, r1)
 }
 
-func (s *server) stop() error {
-	close(s.connection)
+func (s *server) stop(done chan bool) error {
+	<-done // acceptConnections
+	<-done // handleConnections
 	return s.listener.Close()
 }
 
-func sendRequests(op int, done chan bool, address string, r *region.Region) {
-	for i := region.AllocFromRegion[int](r); *i < op; *i++ {
-		_, _ = net.Dial("tcp", address)
+func sendRequests(op int, done chan bool, address string, r1 *region.Region) {
+	r2 := region.CreateRegion(op * 1064)
+	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
+		allocationTimeStart := time.Now()
+		req := region.AllocFromRegion[Request](r2)
+		AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
+
+		req.conn, _ = net.Dial("tcp", address)
+
+		req.conn.Close()
 	}
+
+	deallocationStart := time.Now()
+	r2.RemoveRegion()
+	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
+
+	r1.DecRefCounter()
 	done <- true
-	r.DecRefCounter()
 }
 
-func RunServerHandler() Metrics {
+func RunServerHandler() SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -104,51 +122,48 @@ func RunServerHandler() Metrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-	r1 := region.CreateRegion()
+
+	r1 := region.CreateRegion(0)
 
 	allocationTimeStart := time.Now()
 	address := region.AllocFromRegion[string](r1)
+	done := region.AllocChannel[bool](0, r1)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
 	*address = ":8080"
 
 	s, err := newServer(*address, r1)
 	if err != nil {
 		fmt.Println(err)
-		return Metrics{}
+		return SystemMetrics{}
 	}
 
-	allocationTimeStart = time.Now()
-	done := region.AllocChannel[bool](0, r1)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	s.run(r1)
+	s.run(done, r1)
 
 	for i := 0; i < Goroutines; i++ {
-		r1.IncRefCounter()
-		go sendRequests(ServHandOp, done, *address, r1)
+		if r1.IncRefCounter() {
+			go sendRequests(ServHandOp, done, *address, r1)
+		}
 	}
 
 	for i := 0; i < Goroutines; i++ {
 		<-done
 	}
 
-	if s.stop() != nil {
+	if s.stop(done) != nil {
 		fmt.Println("Could not stop server")
 	}
-
-	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
 
 	deallocationStart := time.Now()
 	r1.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	runtime.GC()
+	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
 
-	return Metrics{
-		float64(ComputationTime.Load()) / 1_000,
-		float64(ServHandOp*1_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000,
-		float64(AllocationTime.Load()) / 1_000,
-		float64(DeallocationTime.Load()) / 1_000}
+	runtime.GC()
+	return SystemMetrics{
+		float64(ComputationTime.Load()),
+		float64(ServHandOp*Goroutines) / float64(ComputationTime.Load()),
+		float64(Latency.Load()),
+		float64(AllocationTime.Load()),
+		float64(DeallocationTime.Load())}
 }

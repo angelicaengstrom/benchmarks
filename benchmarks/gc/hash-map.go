@@ -53,6 +53,7 @@ func (l *list) remove(v int) bool {
 type bucket struct {
 	store    *list
 	requests chan request
+	done     chan bool
 }
 
 type FineGrainedMap struct {
@@ -77,23 +78,24 @@ func (b bucket) remove(value int) bool {
 	return b.store.remove(value)
 }
 
-func NewFineGrainedMap() *FineGrainedMap {
+func NewFineGrainedMap(i *int) *FineGrainedMap {
 	allocationTimeStart := time.Now()
 	buckets := make([]*bucket, HashCap)
+	fgm := new(FineGrainedMap)
+	i = new(int)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	for i := range buckets {
+	for *i = 0; *i < HashCap; *i++ {
 		allocationTimeStart = time.Now()
-		buckets[i] = new(bucket)
-		buckets[i].store = new(list)
-		buckets[i].requests = make(chan request)
+		buckets[*i] = new(bucket)
+		buckets[*i].store = new(list)
+		buckets[*i].requests = make(chan request)
+		buckets[*i].done = make(chan bool)
 		AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-		go buckets[i].run()
+		req := request{}
+		go buckets[*i].run(&req)
 	}
-	allocationTimeStart = time.Now()
-	fgm := new(FineGrainedMap)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	fgm.buckets = buckets
 	fgm.size = HashCap
@@ -101,9 +103,9 @@ func NewFineGrainedMap() *FineGrainedMap {
 	return fgm
 }
 
-func (b bucket) run() {
+func (b bucket) run(req *request) {
 	allocationTimeStart := time.Now()
-	req := new(request)
+	req = new(request)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
 	for *req = range b.requests {
@@ -116,65 +118,59 @@ func (b bucket) run() {
 		case OpRemove:
 			req.result <- b.remove(req.value)
 		}
-
 	}
+	b.done <- true
 }
 
 func (m *FineGrainedMap) hashKey(key int) int {
 	return key % m.size
 }
 
-func (m *FineGrainedMap) Insert(value int) bool {
+func (m *FineGrainedMap) Insert(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
+	return <-res
+}
+
+func (m *FineGrainedMap) Search(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpSearch, result: res, latencyStart: time.Now()}
+	return <-res
+}
+
+func (m *FineGrainedMap) Delete(value int, idx int, res chan bool) bool {
+	idx = m.hashKey(value)
+	m.buckets[idx].requests <- request{value: value, op: OpRemove, result: res, latencyStart: time.Now()}
+	return <-res
+}
+
+func closeBuckets(m *FineGrainedMap) {
+	for i := range m.buckets {
+		close(m.buckets[i].requests)
+		<-m.buckets[i].done
+	}
+}
+
+func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done chan bool, i *int) {
 	allocationTimeStart := time.Now()
 	idx := new(int)
 	res := make(chan bool)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-
-	m.buckets[*idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
-	return <-res
-}
-
-func (m *FineGrainedMap) Search(value int) bool {
-	allocationTimeStart := time.Now()
-	idx := new(int)
-	res := make(chan bool)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-
-	m.buckets[*idx].requests <- request{value: value, op: OpSearch, result: res, latencyStart: time.Now()}
-	return <-res
-}
-
-func (m *FineGrainedMap) Delete(value int) bool {
-	allocationTimeStart := time.Now()
-	idx := new(int)
-	res := make(chan bool)
-	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-
-	*idx = m.hashKey(value)
-	m.buckets[*idx].requests <- request{value: value, op: OpRemove, result: res, latencyStart: time.Now()}
-	return <-res
-}
-
-func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done chan bool) {
-	for i := new(int); *i < op; *i++ {
+	for i = new(int); *i < op; *i++ {
 		val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(3)); method {
 		case OpInsert:
-			m.Insert(val)
+			m.Insert(val, *idx, res)
 		case OpSearch:
-			m.Search(val)
+			m.Search(val, *idx, res)
 		case OpRemove:
-			m.Delete(val)
+			m.Delete(val, *idx, res)
 		}
 	}
 	done <- true
 }
 
-func RunHashMap(valueRange int) Metrics {
+func RunHashMap(valueRange int) SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -182,30 +178,35 @@ func RunHashMap(valueRange int) Metrics {
 	DeallocationTime.Store(0)
 	Latency.Store(0)
 
+	c := [Goroutines + 1]int{}
+	computationTimeStart := time.Now()
+
 	allocationTimeStart := time.Now()
 	done := make(chan bool)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	computationTimeStart := time.Now()
-	m := NewFineGrainedMap()
+	m := NewFineGrainedMap(&c[Goroutines])
 
 	for i := 0; i < Goroutines; i++ {
-		go generateHashMapOperations(m, valueRange, HashOp, done)
+		go generateHashMapOperations(m, valueRange, HashOp, done, &c[i])
 	}
 
 	for i := 0; i < Goroutines; i++ {
 		<-done
 	}
-	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	closeBuckets(m)
 
 	deallocationStart := time.Now()
 	runtime.GC()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	return Metrics{
-		float64(ComputationTime.Load()) / 1_000,
-		float64(HashOp*1_000_000) / float64(ComputationTime.Load()),
-		float64(Latency.Load()) / 1_000,
-		float64(AllocationTime.Load()) / 1_000,
-		float64(DeallocationTime.Load()) / 1_000}
+	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	return SystemMetrics{
+		float64(ComputationTime.Load()),
+		float64(HashOp) / float64(ComputationTime.Load()),
+		float64(Latency.Load()),
+		float64(AllocationTime.Load()),
+		float64(DeallocationTime.Load())}
 }
