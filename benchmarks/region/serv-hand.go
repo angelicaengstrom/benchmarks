@@ -36,7 +36,7 @@ func newServer(address string, r *region.Region) (*server, error) {
 
 func (s *server) acceptConnections(done chan bool, r1 *region.Region) {
 	r2 := region.CreateRegion(ServHandOp * 1064 * Goroutines)
-	for i := region.AllocFromRegion[int](r2); i < ServHandOp*Goroutines; i++ {
+	for i := region.AllocFromRegion[int](r2); *i < ServHandOp*Goroutines; *i++ {
 		allocationTimeStart := time.Now()
 		req := region.AllocFromRegion[Request](r2)
 		AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
