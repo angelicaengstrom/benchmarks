@@ -1,5 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator, FuncFormatter, LogFormatterExponent, LogFormatter
 import matplotlib as mpl
 import numpy as np
 import sys
@@ -7,8 +8,8 @@ import sys
 def plot_mem(program):
     goroutines = [1, 16, 32, 64, 128, 256]
     for idx, g in enumerate(goroutines):
-        df_gc = pd.read_csv("build/results/" + program + "/" + str(g) + "-GC-mem.csv")
-        df_rbmm = pd.read_csv("build/results/" + program + "/" + str(g) + "-RBMM-mem.csv")
+        df_gc = pd.read_csv("results/" + program + "/" + str(g) + "-GC-mem.csv")
+        df_rbmm = pd.read_csv("results/" + program + "/" + str(g) + "-RBMM-mem.csv")
 
         df_rbmm = df_rbmm.drop_duplicates(subset="Time", keep="first")
         df_gc = df_gc.drop_duplicates(subset="Time", keep="first")
@@ -55,8 +56,8 @@ def plot_mem(program):
         plt.show(block=False)
 
 def plot_sys(program):
-    df_gc = pd.read_csv("build/results/" + program + "/" + "GC-sys.csv")
-    df_rbmm = pd.read_csv("build/results/" + program + "/" + "RBMM-sys.csv")
+    df_gc = pd.read_csv("results/" + program + "/" + "GC-sys.csv")
+    df_rbmm = pd.read_csv("results/" + program + "/" + "RBMM-sys.csv")
 
     df_rbmm = df_rbmm.drop_duplicates(subset="G", keep="first")
     df_gc = df_gc.drop_duplicates(subset="G", keep="first")
@@ -76,8 +77,10 @@ def plot_sys(program):
     df_gc_interp.rename(columns={"index": "G"}, inplace=True)
 
     fig, axes = plt.subplots(nrows=5, ncols=1, figsize=(10, 12))
+    
     for i, metric in enumerate(metrics):
         ax = axes[i]
+        
         err_metric = error_metrics[i]
         if metric == "Theta":
             x = np.arange(len(df_rbmm_interp["G"]))
@@ -102,6 +105,14 @@ def plot_sys(program):
             ax.set_xticks(x)
             ax.set_xticklabels(df_rbmm_interp["G"])
         else:
+            ax.set_ylabel(metric_labels[i])
+            ax.grid(True)
+            
+            if df_rbmm_interp[metric].max() > 500 or df_gc_interp[metric].max() > 500:
+                ax.set_yscale('log')
+                #ax.yaxis.set_major_formatter(LogFormatter(base=10.0, labelOnlyBase=False))
+                #ax.yaxis.set_major_formatter(LogFormatterExponent(base=10.0, labelOnlyBase=True))
+
             # Plot RBMM
             ax.plot(df_rbmm_interp["G"], df_rbmm_interp[metric],
                         linestyle=linestyles[0], color=colors[0], label="RBMM", marker="o")
@@ -115,9 +126,6 @@ def plot_sys(program):
             ax.errorbar(df_gc_interp["G"], df_gc_interp[metric],
                         yerr=df_gc_interp[err_metric], fmt="s", color=colors[1], markerfacecolor=colors[1],
                         markeredgecolor=colors[1], label="", capsize=3, elinewidth=1)
-
-            ax.set_ylabel(metric_labels[i])
-            ax.grid(True)
 
         ax.set_xlabel("Goroutines")
         legend = ax.legend(loc="upper left")
