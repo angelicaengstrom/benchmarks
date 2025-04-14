@@ -22,31 +22,39 @@ type position struct {
 	latencyStart time.Time
 }
 
-func generateMatrix(valueRange int, r *region.Region) [Rows]*[Cols]int {
+func generateMatrix(valueRange int, r *region.Region) [Rows]*[Cols]*int {
 	allocationStart := time.Now()
-	matrix := region.AllocFromRegion[[Rows]*[Cols]int](r)
+	matrix := region.AllocFromRegion[[Rows]*[Cols]*int](r)
 	i := region.AllocFromRegion[int](r)
 	j := region.AllocFromRegion[int](r)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for *i = 0; *i < Rows; *i++ {
 		allocationStart = time.Now()
-		(*matrix)[*i] = region.AllocFromRegion[[Cols]int](r)
+		(*matrix)[*i] = region.AllocFromRegion[[Cols]*int](r)
 		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 		for *j = 0; *j < Cols; *j++ {
-			(*matrix)[*i][*j] = rand.IntN(valueRange) + 1
+			allocationStart = time.Now()
+			(*matrix)[*i][*j] = region.AllocFromRegion[int](r)
+			AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+			*(*matrix)[*i][*j] = rand.IntN(valueRange) + 1
 		}
 	}
 
 	return *matrix
 }
 
-func matrixMultiplication(m1 [Rows]*[Cols]int, m2 [Rows]*[Cols]int, done chan bool, r1 *region.Region) {
+func matrixMultiplication(m1 [Rows]*[Cols]*int, m2 [Rows]*[Cols]*int, done chan bool, r1 *region.Region) {
 	if Cols != Rows {
 		return
 	}
 
-	r2 := region.CreateRegion((Rows + 1) * Cols * 8)
+	sz := (1 + Rows) * Cols * 8
+	if sz > RegionBlockBytes {
+		sz = sz % RegionBlockBytes
+	}
+
+	r2 := region.CreateRegion(sz)
 
 	allocationStart := time.Now()
 	result := region.AllocFromRegion[[Rows]*[Cols]int](r2)
@@ -61,11 +69,11 @@ func matrixMultiplication(m1 [Rows]*[Cols]int, m2 [Rows]*[Cols]int, done chan bo
 		}
 	}
 
+	allocationStart = time.Now()
 	for *i = 0; *i < Rows; *i++ {
-		allocationStart = time.Now()
 		(*result)[*i] = region.AllocFromRegion[[Cols]int](r2)
-		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 	}
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	r1.IncRefCounter()
 	go func() {
@@ -96,37 +104,47 @@ func matrixMultiplication(m1 [Rows]*[Cols]int, m2 [Rows]*[Cols]int, done chan bo
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 }
 
-func calculateProduct(row [Cols]int, col [Rows]int, k *int, p *int) *int {
+func calculateProduct(row [Cols]*int, col [Rows]*int, k *int, p *int) *int {
 	*p = 0
 	for *k = 0; *k < len(row); *k++ {
-		*p += row[*k] * col[*k]
+		*p += (*row[*k]) * (*col[*k])
 	}
 	return p
 }
 
-func fetchColumn(m2 [Rows]*[Cols]int, col [Rows]int, j int, i *int) [Rows]int {
+func fetchColumn(m2 [Rows]*[Cols]*int, col [Rows]*int, j int, i *int) [Rows]*int {
 	for *i = 0; *i < len(m2); *i++ {
-		col[*i] = m2[*i][j]
+		*col[*i] = *m2[*i][j]
 	}
 	return col
 }
 
+func initColumn(col *[Rows]*int, n int, i *int, r *region.Region) {
+	allocationStart := time.Now()
+	for *i = 0; *i < n; *i++ {
+		(*col)[*i] = region.AllocFromRegion[int](r)
+	}
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+}
+
 func calculateProducts(
-	m1 [Rows]*[Cols]int,
-	m2 [Rows]*[Cols]int,
+	m1 [Rows]*[Cols]*int,
+	m2 [Rows]*[Cols]*int,
 	products chan product,
 	positions chan position,
 	done chan bool,
 	r1 *region.Region) {
 
-	r2 := region.CreateRegion(Rows)
+	r2 := region.CreateRegion(Rows * 16)
 
 	allocationStart := time.Now()
-	col := region.AllocFromRegion[[Rows]int](r2)
+	col := region.AllocFromRegion[[Rows]*int](r2)
 	pos := region.AllocFromRegion[position](r2)
 	i := region.AllocFromRegion[int](r2)
 	p := region.AllocFromRegion[int](r2)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+
+	initColumn(col, Rows, i, r2)
 
 	for *pos = range positions {
 		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
@@ -153,10 +171,16 @@ func RunMatrixMultiplication(valueRange int) SystemMetrics {
 	DeallocationTime.Store(0)
 	Latency.Store(0)
 
+	sz := Rows * Cols * 34
+	if sz > RegionBlockBytes {
+		sz = sz % RegionBlockBytes
+	}
 	start := time.Now()
+	r1 := region.CreateRegion(sz)
 
-	r1 := region.CreateRegion((1 + Rows) * Cols * 16)
+	allocationStart := time.Now()
 	done := region.AllocChannel[bool](0, r1)
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	m1 := generateMatrix(valueRange, r1)
 	m2 := generateMatrix(valueRange, r1)

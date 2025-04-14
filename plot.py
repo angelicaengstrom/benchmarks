@@ -2,12 +2,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
+import sys
 
 def plot_mem(program):
-    goroutines = [1, 5, 10]
+    goroutines = [1, 16, 32, 64, 128, 256]
     for idx, g in enumerate(goroutines):
-        df_gc = pd.read_csv("results/" + program + "/" + str(g) + "-GC-mem.csv")
-        df_rbmm = pd.read_csv("results/" + program + "/" + str(g) + "-RBMM-mem.csv")
+        df_gc = pd.read_csv("build/results/" + program + "/" + str(g) + "-GC-mem.csv")
+        df_rbmm = pd.read_csv("build/results/" + program + "/" + str(g) + "-RBMM-mem.csv")
 
         df_rbmm = df_rbmm.drop_duplicates(subset="Time", keep="first")
         df_gc = df_gc.drop_duplicates(subset="Time", keep="first")
@@ -54,8 +55,8 @@ def plot_mem(program):
         plt.show(block=False)
 
 def plot_sys(program):
-    df_gc = pd.read_csv("results/" + program + "/" + "GC-sys.csv")
-    df_rbmm = pd.read_csv("results/" + program + "/" + "RBMM-sys.csv")
+    df_gc = pd.read_csv("build/results/" + program + "/" + "GC-sys.csv")
+    df_rbmm = pd.read_csv("build/results/" + program + "/" + "RBMM-sys.csv")
 
     df_rbmm = df_rbmm.drop_duplicates(subset="G", keep="first")
     df_gc = df_gc.drop_duplicates(subset="G", keep="first")
@@ -128,7 +129,7 @@ def plot_sys(program):
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show(block=False)
 
-program = "serv-hand"
+program = sys.argv[1]
 
 mpl.rcParams["axes.formatter.use_mathtext"] = True
 mpl.rcParams.update({

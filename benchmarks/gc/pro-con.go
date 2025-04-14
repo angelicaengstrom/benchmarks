@@ -7,15 +7,15 @@ import (
 	"time"
 )
 
-type large struct {
-	x            [32]int
+type value struct {
+	x            [32]*int
 	latencyStart time.Time
 }
 
-func producing(buffer chan large, done chan bool, x *large, i *int) {
+func producing(buffer chan value, done chan bool, x *value, i *int) {
 	for i = new(int); *i < ProConOp; *i++ {
 		allocationStart := time.Now()
-		x = new(large)
+		x = new(value)
 		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 		x.latencyStart = time.Now()
@@ -25,7 +25,7 @@ func producing(buffer chan large, done chan bool, x *large, i *int) {
 	done <- true
 }
 
-func consuming(buffer chan large, done chan bool) {
+func consuming(buffer chan value, done chan bool) {
 	for x := range buffer {
 		Latency.Add(time.Since(x.latencyStart).Nanoseconds())
 		_ = x
@@ -41,13 +41,13 @@ func RunProducerConsumer(valueRange int) SystemMetrics {
 	DeallocationTime.Store(0)
 	Latency.Store(0)
 
-	x := [Goroutines]large{} // To avoid escape analysis to the stack
+	x := [Goroutines]value{} // To avoid escape analysis to the stack
 	c := [Goroutines]int{}
 
 	computationTimeStart := time.Now()
 
 	allocationStart := time.Now()
-	buffer := make(chan large)
+	buffer := make(chan value, Goroutines)
 	doneProducers := make(chan bool)
 	doneConsumers := make(chan bool)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
@@ -57,13 +57,14 @@ func RunProducerConsumer(valueRange int) SystemMetrics {
 		go consuming(buffer, doneConsumers)
 	}
 
+
 	go func() {
 		for i := 0; i < Goroutines; i++ {
 			<-doneProducers
 		}
 		close(buffer)
 	}()
-
+	
 	for i := 0; i < Goroutines; i++ {
 		<-doneConsumers
 	}

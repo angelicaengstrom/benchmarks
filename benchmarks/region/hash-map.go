@@ -4,7 +4,6 @@ package region
 
 import (
 	. "experiments/benchmarks/metrics"
-	"math/rand/v2"
 	"region"
 	"runtime"
 	"runtime/debug"
@@ -96,6 +95,7 @@ func NewFineGrainedMap(r *region.Region) *FineGrainedMap {
 			(*buckets)[*i].requests = region.AllocChannel[request](0, r)
 			(*buckets)[*i].done = region.AllocChannel[bool](0, r)
 			AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
+			
 			go (*buckets)[*i].run(r)
 		}
 	}
@@ -130,9 +130,13 @@ func (m *FineGrainedMap) hashKey(key int) int {
 	return key % m.size
 }
 
-func (m *FineGrainedMap) Insert(value int, idx int, res chan bool) bool {
+func (m *FineGrainedMap) Insert(value int, idx int, res chan bool, req request) bool {
 	idx = m.hashKey(value)
-	m.buckets[idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
+	req.value = value
+	req.op = OpInsert
+	req.result = res
+	req.latencyStart = time.Now()
+	m.buckets[idx].requests <- req
 	return <-res
 }
 
@@ -161,9 +165,13 @@ func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done c
 	allocationTimeStart := time.Now()
 	idx := region.AllocFromRegion[int](r2)
 	res := region.AllocChannel[bool](0, r2)
+	req := region.AllocFromRegion[request](r2)
+	i := region.AllocFromRegion[int](r2)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
 
-	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
+	for *i = 0; *i < op; *i++ {
+		m.Insert(*i + valueRange, *idx, res, *req)
+		/*
 		val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(3)); method {
 		case OpInsert:
@@ -172,7 +180,7 @@ func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done c
 			m.Search(val, *idx, res)
 		case OpRemove:
 			m.Delete(val, *idx, res)
-		}
+		}*/
 	}
 
 	deallocationStart := time.Now()
@@ -183,7 +191,7 @@ func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done c
 	done <- true
 }
 
-func RunHashMap(valueRange int) SystemMetrics {
+func RunHashMap() SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -192,7 +200,7 @@ func RunHashMap(valueRange int) SystemMetrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-	r1 := region.CreateRegion(HashCap * 8)
+	r1 := region.CreateRegion(RegionBlockBytes / 6)
 
 	allocationTimeStart := time.Now()
 	done := region.AllocChannel[bool](0, r1)
@@ -200,10 +208,12 @@ func RunHashMap(valueRange int) SystemMetrics {
 
 	m := NewFineGrainedMap(r1)
 
+	valueRange := 0
 	for i := 0; i < Goroutines; i++ {
 		if r1.IncRefCounter() {
 			go generateHashMapOperations(m, valueRange, HashOp, done, r1)
 		}
+		valueRange += HashOp
 	}
 
 	for i := 0; i < Goroutines; i++ {
@@ -222,7 +232,7 @@ func RunHashMap(valueRange int) SystemMetrics {
 
 	return SystemMetrics{
 		float64(ComputationTime.Load()),
-		float64(HashOp) / float64(ComputationTime.Load()),
+		float64(HashOp * Goroutines) / float64(ComputationTime.Load()),
 		float64(Latency.Load()),
 		float64(AllocationTime.Load()),
 		float64(DeallocationTime.Load())}

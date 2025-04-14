@@ -10,13 +10,13 @@ import (
 )
 
 type value struct {
-	x            [32]int
+	x            [32]*int
 	latencyStart time.Time
 }
 
-func producing(buffer chan value, done chan bool, op int, valueRange int, r *region.Region) {
-	r2 := region.CreateRegion(280 * op)
-	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
+func producing(buffer chan value, done chan bool, r1 *region.Region) {
+	r2 := region.CreateRegion(280 * ProConOp)
+	for i := region.AllocFromRegion[int](r1); *i < ProConOp; *i++ {
 		allocationStart := time.Now()
 		x := region.AllocFromRegion[value](r2)
 		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
@@ -30,14 +30,13 @@ func producing(buffer chan value, done chan bool, op int, valueRange int, r *reg
 	r2.RemoveRegion()
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
-	r.DecRefCounter()
+	r1.DecRefCounter()
 	done <- true
 }
 
 func consuming(buffer chan value, done chan bool, r *region.Region) {
 	for x := range buffer {
 		Latency.Add(time.Since(x.latencyStart).Nanoseconds())
-		_ = x
 	}
 
 	r.DecRefCounter()
@@ -53,17 +52,17 @@ func RunProducerConsumer(valueRange int) SystemMetrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-	r1 := region.CreateRegion(0)
+	r1 := region.CreateRegion(290 * Goroutines)
 
 	allocationStart := time.Now()
-	buffer := region.AllocChannel[value](0, r1)
+	buffer := region.AllocChannel[value](Goroutines, r1)
 	doneProducers := region.AllocChannel[bool](0, r1)
 	doneConsumers := region.AllocChannel[bool](0, r1)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for i := 0; i < Goroutines; i++ {
 		if r1.IncRefCounter() {
-			go producing(buffer, doneProducers, ProConOp, valueRange, r1)
+			go producing(buffer, doneProducers, r1)
 		}
 		if r1.IncRefCounter() {
 			go consuming(buffer, doneConsumers, r1)
@@ -79,7 +78,6 @@ func RunProducerConsumer(valueRange int) SystemMetrics {
 			r1.DecRefCounter()
 		}()
 	}
-
 	for i := 0; i < Goroutines; i++ {
 		<-doneConsumers
 	}
@@ -89,6 +87,8 @@ func RunProducerConsumer(valueRange int) SystemMetrics {
 	DeallocationTime.Add(time.Since(deallocationStart).Nanoseconds())
 
 	ComputationTime.Store(time.Since(computationTimeStart).Nanoseconds())
+
+	//runtime.GC()
 
 	return SystemMetrics{
 		float64(ComputationTime.Load()),

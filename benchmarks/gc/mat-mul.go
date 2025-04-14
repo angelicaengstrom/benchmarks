@@ -19,33 +19,37 @@ type position struct {
 	latencyStart time.Time
 }
 
-func generateMatrix(valueRange int) [][]int {
+func generateMatrix(valueRange int) []*[]*int {
 	allocationStart := time.Now()
-	matrix := make([][]int, Rows)
+	matrix := make([]*[]*int, Rows)
 	j := new(int)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for i := new(int); *i < len(matrix); *i++ {
 		allocationStart = time.Now()
-		matrix[*i] = make([]int, Cols)
+		matrix[*i] = new([]*int)
+		*matrix[*i] = make([]*int, Cols)
 		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
-		for *j = 0; *j < len(matrix[*i]); *j++ {
-			matrix[*i][*j] = rand.IntN(valueRange)
+		for *j = 0; *j < len(*matrix[*i]); *j++ {
+			AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+			(*matrix[*i])[*j] = new(int)
+			AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+			*(*matrix[*i])[*j] = rand.IntN(valueRange)
 		}
 	}
 	return matrix
 }
 
-func matrixMultiplication(m1 [][]int, m2 [][]int, done chan bool, result *[][]int) {
-	if len(m1[0]) != len(m2) {
+func matrixMultiplication(m1 []*[]*int, m2 []*[]*int, done chan bool, result *[]*[]int) {
+	if len(*m1[0]) != len(m2) {
 		return
 	}
 	r1 := len(m1)
-	c2 := len(m2[0])
+	c2 := len(*m2[0])
 
 	allocationStart := time.Now()
-	*result = make([][]int, r1)
+	*result = make([]*[]int, r1)
 	products := make(chan product)
 	positions := make(chan position)
 	i := new(int)
@@ -55,11 +59,12 @@ func matrixMultiplication(m1 [][]int, m2 [][]int, done chan bool, result *[][]in
 		go calculateProducts(m1, m2, products, positions, done)
 	}
 
+	allocationStart = time.Now()
 	for *i = 0; *i < len(*result); *i++ {
-		allocationStart = time.Now()
-		(*result)[*i] = make([]int, c2)
-		AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+		(*result)[*i] = new([]int)
+		*(*result)[*i] = make([]int, c2)
 	}
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	go func() {
 		allocationStart = time.Now()
@@ -76,35 +81,45 @@ func matrixMultiplication(m1 [][]int, m2 [][]int, done chan bool, result *[][]in
 
 	for *i = 0; *i < r1*c2; *i++ {
 		r := <-products
-		(*result)[r.pos.x][r.pos.y] = r.res
+		(*(*result)[r.pos.x])[r.pos.y] = r.res
 	}
 
 	close(positions)
 	<-done
 }
 
-func calculateProduct(row []int, col []int, k *int, p *int) *int {
+func calculateProduct(row []*int, col []*int, k *int, p *int) *int {
 	*p = 0
 	for *k = 0; *k < len(row); *k++ {
-		*p += row[*k] * col[*k]
+		*p += (*row[*k]) * (*col[*k])
 	}
 	return p
 }
 
-func fetchColumn(m2 [][]int, col []int, j int, i *int) []int {
+func fetchColumn(m2 []*[]*int, col []*int, j int, i *int) []*int {
 	for *i = 0; *i < len(m2); *i++ {
-		col[*i] = m2[*i][j]
+		*col[*i] = *(*m2[*i])[j]
 	}
 	return col
 }
 
-func calculateProducts(m1 [][]int, m2 [][]int, products chan product, positions chan position, done chan bool) {
+func initColumn(col *[]*int, n int, i *int) {
 	allocationStart := time.Now()
-	col := make([]int, len(m2))
+	for *i = 0; *i < n; *i++ {
+		(*col)[*i] = new(int)
+	}
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+}
+
+func calculateProducts(m1 []*[]*int, m2 []*[]*int, products chan product, positions chan position, done chan bool) {
+	allocationStart := time.Now()
+	col := make([]*int, len(m2))
 	pos := new(position)
 	i := new(int)
 	p := new(int)
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
+
+	initColumn(&col, len(m2), i)
 
 	for *pos = range positions {
 		Latency.Add(time.Since(pos.latencyStart).Nanoseconds())
@@ -112,7 +127,7 @@ func calculateProducts(m1 [][]int, m2 [][]int, products chan product, positions 
 		col = fetchColumn(m2, col, pos.y, i)
 
 		products <- product{
-			res: *calculateProduct(m1[pos.x], col, i, p),
+			res: *calculateProduct(*m1[pos.x], col, i, p),
 			pos: *pos,
 		}
 	}
@@ -128,12 +143,14 @@ func RunMatrixMultiplication(valueRange int) SystemMetrics {
 
 	start := time.Now()
 
+	allocationStart := time.Now()
 	done := make(chan bool)
+	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	m1 := generateMatrix(valueRange)
 	m2 := generateMatrix(valueRange)
 
-	var res [][]int
+	var res []*[]int
 	matrixMultiplication(m1, m2, done, &res)
 
 	for i := 0; i < Goroutines; i++ {

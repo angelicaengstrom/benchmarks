@@ -2,7 +2,6 @@ package gc
 
 import (
 	. "experiments/benchmarks/metrics"
-	"math/rand/v2"
 	"runtime"
 	"runtime/debug"
 	"time"
@@ -126,9 +125,13 @@ func (m *FineGrainedMap) hashKey(key int) int {
 	return key % m.size
 }
 
-func (m *FineGrainedMap) Insert(value int, idx int, res chan bool) bool {
+func (m *FineGrainedMap) Insert(value int, idx int, res chan bool, req request) bool {
 	idx = m.hashKey(value)
-	m.buckets[idx].requests <- request{value: value, op: OpInsert, result: res, latencyStart: time.Now()}
+	req.value = value
+	req.op = OpInsert
+	req.result = res
+	req.latencyStart = time.Now()
+	m.buckets[idx].requests <- req
 	return <-res
 }
 
@@ -155,8 +158,13 @@ func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done c
 	allocationTimeStart := time.Now()
 	idx := new(int)
 	res := make(chan bool)
+	req := new(request)
+	i = new(int)
 	AllocationTime.Add(time.Since(allocationTimeStart).Nanoseconds())
-	for i = new(int); *i < op; *i++ {
+
+	for *i = 0; *i < op; *i++ {
+		m.Insert(*i + valueRange, *idx, res, *req)
+		/*
 		val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(3)); method {
 		case OpInsert:
@@ -165,12 +173,12 @@ func generateHashMapOperations(m *FineGrainedMap, valueRange int, op int, done c
 			m.Search(val, *idx, res)
 		case OpRemove:
 			m.Delete(val, *idx, res)
-		}
+		}*/
 	}
 	done <- true
 }
 
-func RunHashMap(valueRange int) SystemMetrics {
+func RunHashMap() SystemMetrics {
 	debug.SetGCPercent(-1)
 
 	ComputationTime.Store(0)
@@ -187,8 +195,10 @@ func RunHashMap(valueRange int) SystemMetrics {
 
 	m := NewFineGrainedMap(&c[Goroutines])
 
+	valueRange := 0
 	for i := 0; i < Goroutines; i++ {
 		go generateHashMapOperations(m, valueRange, HashOp, done, &c[i])
+		valueRange += HashOp
 	}
 
 	for i := 0; i < Goroutines; i++ {
@@ -205,7 +215,7 @@ func RunHashMap(valueRange int) SystemMetrics {
 
 	return SystemMetrics{
 		float64(ComputationTime.Load()),
-		float64(HashOp) / float64(ComputationTime.Load()),
+		float64(HashOp * Goroutines) / float64(ComputationTime.Load()),
 		float64(Latency.Load()),
 		float64(AllocationTime.Load()),
 		float64(DeallocationTime.Load())}

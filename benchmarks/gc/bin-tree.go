@@ -2,7 +2,6 @@ package gc
 
 import (
 	. "experiments/benchmarks/metrics"
-	"math/rand/v2"
 	"runtime"
 	"runtime/debug"
 	"time"
@@ -182,13 +181,14 @@ func generateBinaryTreeOperations(valueRange int, op int, tree *FineGrainBinaryT
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for i = new(int); *i < op; *i++ {
-		val := rand.IntN(valueRange) + 1
+		tree.Insert(*i + valueRange, *req)
+		/*val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(2)); method {
 		case OpInsert:
 			tree.Insert(val, *req)
 		case OpSearch:
 			tree.Search(val, *req)
-		}
+		}*/
 	}
 	done <- true
 }
@@ -224,8 +224,10 @@ func RunBinaryTree(op int) SystemMetrics {
 
 	fgbt := NewFineGrainBinaryTree()
 
+	valueRange := 0
 	for i := 0; i < Goroutines; i++ {
-		go generateBinaryTreeOperations(BinRange, op, fgbt, done, &reqs[i], &c[i])
+		go generateBinaryTreeOperations(valueRange, op, fgbt, done, &reqs[i], &c[i])
+		valueRange += BinOp
 	}
 
 	for i := 0; i < Goroutines; i++ {

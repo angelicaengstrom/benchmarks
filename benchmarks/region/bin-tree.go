@@ -5,7 +5,6 @@ package region
 import (
 	. "experiments/benchmarks/metrics"
 	"fmt"
-	"math/rand/v2"
 	"region"
 	"runtime"
 	"runtime/debug"
@@ -190,13 +189,14 @@ func generateBinaryTreeOperations(valueRange int, op int, tree *FineGrainBinaryT
 	AllocationTime.Add(time.Since(allocationStart).Nanoseconds())
 
 	for i := region.AllocFromRegion[int](r2); *i < op; *i++ {
-		val := rand.IntN(valueRange) + 1
+		tree.Insert(*i + valueRange, *req)
+		/*val := rand.IntN(valueRange) + 1
 		switch method := opType(rand.IntN(2)); method {
 		case OpInsert:
 			tree.Insert(val, *req)
 		case OpSearch:
 			tree.Search(val, *req)
-		}
+		}*/
 	}
 	deallocationStart := time.Now()
 	r2.RemoveRegion()
@@ -239,8 +239,8 @@ func RunBinaryTree(op int) SystemMetrics {
 	Latency.Store(0)
 
 	computationTimeStart := time.Now()
-
-	r1 := region.CreateRegion(BinRange * 200)
+	//r1 := region.CreateRegion(BinRange * 350)
+	r1 := region.CreateRegion(RegionBlockBytes / 8)
 
 	allocationTimeStart := time.Now()
 	done := region.AllocChannel[bool](0, r1)
@@ -248,10 +248,12 @@ func RunBinaryTree(op int) SystemMetrics {
 
 	fgbt := NewFineGrainBinaryTree(r1)
 
+	valueRange := 0
 	for i := 0; i < Goroutines; i++ {
 		if r1.IncRefCounter() {
-			go generateBinaryTreeOperations(BinRange, op, fgbt, done, r1)
+			go generateBinaryTreeOperations(valueRange, op, fgbt, done, r1)
 		}
+		valueRange += BinOp
 	}
 
 	for i := 0; i < Goroutines; i++ {

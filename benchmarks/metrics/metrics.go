@@ -9,15 +9,15 @@ import (
 const (
 	RegionBlockBytes = 8388608
 	// Amount of goroutines
-	Goroutines = 10
+	Goroutines = 256
 
 	// mat-mul
-	Rows = 100 * (1 + (Goroutines >> 2))
+	Rows = 100 * (1 + (Goroutines >> 4))
 	Cols = Rows
 
 	//bin-tree
-	BinOp    = 5000
-	BinRange = Goroutines * BinOp
+	BinOp    = 2000
+	BinRange = BinOp * Goroutines
 
 	//pro-con
 	ProConOp = 10000
@@ -26,9 +26,9 @@ const (
 	ServHandOp = 100
 
 	//hash-map
-	HashOp    = 20000
+	HashOp    = 2000
 	HashRange = HashOp
-	HashCap   = HashRange * 4 / 3
+	HashCap   = (HashRange * Goroutines * 4) / 3
 )
 
 var ComputationTime atomic.Int64
